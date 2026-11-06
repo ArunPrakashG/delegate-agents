@@ -1,0 +1,21 @@
+{
+  "name": "delegate-agents",
+  "version": "0.1.0",
+  "description": "Hand a well-specified task to another agent CLI (opencode, codex, claude -p) and get the result back, and run long-lived commands in tmux without babysitting them. Sessions can be resumed by ID.",
+  "author": {
+    "name": "Arun Prakash"
+  },
+  "keywords": [
+    "delegation",
+    "agents",
+    "tmux",
+    "long-running",
+    "servers",
+    "opencode",
+    "codex",
+    "claude"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/ArunPrakashG/delegate-agents",
+  "repository": "https://github.com/ArunPrakashG/delegate-agents"
+}

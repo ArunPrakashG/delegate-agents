@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# tmux-run: start, watch and stop long-running commands in named, detached tmux
+# sessions, so the caller never has to manage tmux directly.
+#
+#   tmux-run start <name> <workdir> [--log FILE] -- <command> [args...]
+#   tmux-run status <name>                     running | exited <code> | stopped
+#   tmux-run log <name> [lines]                last lines of the output
+#   tmux-run wait <name> [timeout-seconds]     blocks; exits with the command's exit code
+#   tmux-run ready <name> <regex|url> [timeout] blocks until the log matches or the URL answers
+#   tmux-run send <name> <text...>             types text into the running command
+#   tmux-run stop <name>                       kills the session
+#   tmux-run list
+#
+# Sessions are named tr-<name>. Output goes to <state>/<name>/log, or to --log FILE.
+# The log ends with "exit=<code>" when the command finishes.
+set -euo pipefail
+
+state_root=${TMUX_RUN_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-run}
+die() { echo "tmux-run: $*" >&2; exit 2; }
+check_name() { [[ ${1:-} =~ ^[A-Za-z0-9_-]+$ ]] || die "bad or missing name '${1:-}' (letters, digits, - and _)"; }
+run_dir() { echo "$state_root/$1"; }
+alive() { tmux has-session -t "tr-$1" 2>/dev/null; }
+known() { [[ -f $(run_dir "$1")/logpath ]] || die "no run named '$1'"; }
+log_of() { cat "$(run_dir "$1")/logpath"; }
+
+cmd_start() {
+  local name=${1:-} dir=${2:-} logf="" cmdline d runner
+  check_name "$name"; [[ -d $dir ]] || die "no such directory: $dir"
+  shift 2
+  if [[ ${1:-} == --log ]]; then logf=$(realpath -m "${2:?--log needs a file}"); shift 2; fi
+  [[ ${1:-} == -- ]] || die "expected -- before the command"; shift
+  (($#)) || die "no command given"
+  alive "$name" && die "tr-$name is already running; stop it or choose another name"
+  dir=$(realpath "$dir"); d=$(run_dir "$name"); mkdir -p "$d"; rm -f "$d/exit"
+  [[ -n $logf ]] || logf="$d/log"
+  : > "$logf"; echo "$logf" > "$d/logpath"
+  cmdline=$(printf '%q ' "$@")
+  runner="$d/run.sh"
+  cat > "$runner" <<RUN
+cd $(printf %q "$dir") || exit 1
+echo "\$(date -Is) start: $cmdline" >> $(printf %q "$logf")
+$cmdline >> $(printf %q "$logf") 2>&1
+code=\$?
+echo "exit=\$code" >> $(printf %q "$logf")
+echo "\$code" > $(printf %q "$d/exit")
+RUN
+  tmux new-session -d -s "tr-$name" -c "$dir" "bash $(printf %q "$runner")"
+  echo "started tr-$name  log: $logf"
+}
+
+cmd_status() {
+  local name=${1:-}; check_name "$name"; known "$name"
+  if alive "$name"; then echo running
+  elif [[ -f $(run_dir "$name")/exit ]]; then echo "exited $(cat "$(run_dir "$name")/exit")"
+  else echo stopped; fi
+}
+
+cmd_log() {
+  local name=${1:-}; check_name "$name"; known "$name"
+  tail -n "${2:-50}" "$(log_of "$name")"
+}
+
+cmd_wait() {
+  local name=${1:-} limit=${2:-900} end
+  check_name "$name"; known "$name"; end=$((SECONDS + limit))
+  while alive "$name"; do
+    if ((SECONDS >= end)); then echo "still running after ${limit}s"; exit 124; fi
+    sleep 2
+  done
+  local f="$(run_dir "$name")/exit"
+  if [[ -f $f ]]; then echo "exit=$(cat "$f")"; exit "$(cat "$f")"; fi
+  echo "stopped before it finished"; exit 130
+}
+
+cmd_ready() {
+  local name=${1:-} target=${2:-} limit=${3:-120} end
+  check_name "$name"; known "$name"; [[ -n $target ]] || die "ready needs a regex or a URL"
+  end=$((SECONDS + limit))
+  while :; do
+    if [[ $target == http* ]]; then
+      if curl -sf -o /dev/null "$target"; then echo "ready: $target answers"; exit 0; fi
+    elif grep -qE -- "$target" "$(log_of "$name")"; then
+      echo "ready: log matches $target"; exit 0
+    fi
+    if ! alive "$name"; then echo "the command ended before it was ready"; exit 1; fi
+    if ((SECONDS >= end)); then echo "not ready after ${limit}s"; exit 124; fi
+    sleep 2
+  done
+}
+
+cmd_send() {
+  local name=${1:-}; check_name "$name"; known "$name"; shift
+  alive "$name" || die "tr-$name is not running"
+  tmux send-keys -t "tr-$name" -- "$*" Enter
+}
+
+cmd_stop() {
+  local name=${1:-}; check_name "$name"; known "$name"
+  tmux kill-session -t "tr-$name" 2>/dev/null || true
+  echo "stopped tr-$name"
+}
+
+cmd_list() {
+  local d name
+  for d in "$state_root"/*/; do
+    [[ -d $d ]] || continue
+    name=$(basename "$d"); printf '%-24s %s\n' "$name" "$(cmd_status "$name")"
+  done
+}
+
+case ${1:-} in
+  start) shift; cmd_start "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  log) shift; cmd_log "$@" ;;
+  wait) shift; cmd_wait "$@" ;;
+  ready) shift; cmd_ready "$@" ;;
+  send) shift; cmd_send "$@" ;;
+  stop) shift; cmd_stop "$@" ;;
+  list) cmd_list ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

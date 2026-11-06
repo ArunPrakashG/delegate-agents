@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Runs one turn of a delegated agent through tmux-run and waits for it to finish.
+#
+#   agent-tmux <adapter> <workdir> <brief-file> <model> [timeout-seconds] [--session ID] [--resume]
+#
+# New delegation: omit --session. The runner makes a session ID and prints it. Keep it.
+# Follow-up turn:  pass --session ID --resume to continue that session with a new brief.
+# Output goes to <brief-file>.log; its last line is "exit=<code>".
+set -euo pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+adapter=${1:?adapter name}; dir=$(realpath "${2:?work directory}")
+brief=$(realpath "${3:?brief file}"); model=${4:?model}
+shift 4
+limit=900; sid=""; mode=start
+if [[ ${1:-} =~ ^[0-9]+$ ]]; then limit=$1; shift; fi
+while (($#)); do
+  case $1 in
+    --session) sid=${2:?--session needs an ID}; shift 2 ;;
+    --resume) mode=resume; shift ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [[ $mode == resume && -z $sid ]]; then echo "--resume needs --session ID" >&2; exit 2; fi
+[[ -n $sid ]] || sid="ses_$(openssl rand -hex 12)"
+
+src="$here/adapters/$adapter.sh"
+[[ -f $src ]] || { echo "no adapter '$adapter' in $here/adapters: see references/discovery.md" >&2; exit 2; }
+source "$src"
+adapter_check || exit 3
+if [[ $mode == resume ]]; then
+  cmd=$(adapter_resume "$model" "$brief" "$sid") || exit 1
+else
+  cmd=$(adapter_start "$model" "$brief" "$sid") || exit 1
+fi
+
+log="$brief.log"; name="ag-$(basename "$brief" .md)-$$"
+echo "watch live: tmux attach -t tr-$name"
+echo "agent session: $sid"
+"$here/scripts/tmux-run" start "$name" "$dir" --log "$log" -- bash -c "timeout $limit $cmd"
+code=0; "$here/scripts/tmux-run" wait "$name" $((limit + 60)) >/dev/null || code=$?
+tail -n 1 "$log"
+exit "$code"

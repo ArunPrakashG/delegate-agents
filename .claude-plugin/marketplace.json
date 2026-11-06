@@ -1,0 +1,17 @@
+{
+  "name": "delegate-agents",
+  "owner": {
+    "name": "Arun Prakash"
+  },
+  "metadata": {
+    "description": "Delegate work to other agent CLIs through tmux."
+  },
+  "plugins": [
+    {
+      "name": "delegate-agents",
+      "source": "./",
+      "description": "Delegate tasks to other agent CLIs through tmux with resumable sessions, and run long-lived commands in tmux (tmux-run) without managing sessions by hand.",
+      "category": "productivity"
+    }
+  ]
+}
